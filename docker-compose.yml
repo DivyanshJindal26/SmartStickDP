@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: smartstick-mosquitto
+    restart: unless-stopped
+    ports:
+      - "1884:1884"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+    networks:
+      - smartstick-network
+
+  api:
+    build: ./server
+    container_name: smartstick-api
+    restart: unless-stopped
+    ports:
+      - "7284:7284"
+    depends_on:
+      - mosquitto        # ✅ Removed mongo, since we’re using Atlas
+    environment:
+    volumes:
+      - ./secrets:/app/secrets:ro
+    networks:
+      - smartstick-network
+
+  # ❌ mongo-express removed — not needed for Atlas
+  # You can use Atlas’s built-in web UI to explore your collections.
+
+volumes:
+  mosquitto_data:
+  mosquitto_log:
+
+networks:
+  smartstick-network:
+    driver: bridge

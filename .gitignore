@@ -1,0 +1,4 @@
+server/node_modules/
+server/secrets/firebase-service-account.json
+server/.env
+server/package-lock.json
