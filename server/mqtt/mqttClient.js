@@ -100,24 +100,48 @@ class MQTTClient {
    */
   async setupSubscriptions() {
     try {
-      // Subscribe to all device telemetry
+      // Subscribe to sensor data from Raspberry Pi
       await this.subscribe(
-        "stick/+/telemetry",
+        "smartstick/+/sensors/sonar",
+        this.handleSonarData.bind(this)
+      );
+
+      await this.subscribe(
+        "smartstick/+/sensors/ir",
+        this.handleIRData.bind(this)
+      );
+
+      await this.subscribe(
+        "smartstick/+/sensors/gps",
+        this.handleGPSData.bind(this)
+      );
+
+      await this.subscribe(
+        "smartstick/+/sensors/imu",
+        this.handleIMUData.bind(this)
+      );
+
+      // Subscribe to all device telemetry (combined data)
+      await this.subscribe(
+        "smartstick/+/telemetry",
         this.handleTelemetryMessage.bind(this)
       );
 
-      // Subscribe to all SOS alerts
-      await this.subscribe("stick/+/sos", this.handleSOSMessage.bind(this));
+      // Subscribe to all SOS alerts from RPi
+      await this.subscribe(
+        "smartstick/+/sos",
+        this.handleSOSMessage.bind(this)
+      );
 
       // Subscribe to device status updates
       await this.subscribe(
-        "stick/+/status",
+        "smartstick/+/status",
         this.handleStatusMessage.bind(this)
       );
 
       // Subscribe to device responses
       await this.subscribe(
-        "stick/+/response",
+        "smartstick/+/response",
         this.handleResponseMessage.bind(this)
       );
 
@@ -211,7 +235,182 @@ class MQTTClient {
   }
 
   /**
-   * Handle telemetry messages from devices
+   * Handle sonar sensor data from Raspberry Pi
+   * @param {string} topic - MQTT topic (smartstick/{deviceId}/sensors/sonar)
+   * @param {string} message - Message payload
+   */
+  async handleSonarData(topic, message) {
+    try {
+      const deviceId = this.extractDeviceId(topic);
+      const sonarData = JSON.parse(message);
+
+      console.log(`📡 Sonar data from device ${deviceId}:`, sonarData);
+
+      // Expected format: { left: 150, center: 200, right: 180, timestamp: "..." }
+      const telemetryData = {
+        sensors: {
+          ultrasonicLeft: sonarData.left,
+          ultrasonicCenter: sonarData.center,
+          ultrasonicRight: sonarData.right,
+        },
+      };
+
+      // Create telemetry record (just store the raw data)
+      await this.saveTelemetryData(
+        deviceId,
+        telemetryData,
+        sonarData.timestamp
+      );
+
+      console.log(`✅ Sonar data processed for device: ${deviceId}`);
+    } catch (error) {
+      console.error("❌ Error handling sonar data:", error);
+    }
+  }
+
+  /**
+   * Handle IR sensor data from Raspberry Pi
+   * @param {string} topic - MQTT topic (smartstick/{deviceId}/sensors/ir)
+   * @param {string} message - Message payload
+   */
+  async handleIRData(topic, message) {
+    try {
+      const deviceId = this.extractDeviceId(topic);
+      const irData = JSON.parse(message);
+
+      console.log(`📡 IR sensor data from device ${deviceId}:`, irData);
+
+      // Expected format: { value: 1024, detected: true, timestamp: "..." }
+      const telemetryData = {
+        sensors: {
+          irSensor: irData.value,
+          irDetected: irData.detected,
+        },
+      };
+
+      await this.saveTelemetryData(deviceId, telemetryData, irData.timestamp);
+
+      console.log(`✅ IR data processed for device: ${deviceId}`);
+    } catch (error) {
+      console.error("❌ Error handling IR data:", error);
+    }
+  }
+
+  /**
+   * Handle GPS data from Raspberry Pi
+   * @param {string} topic - MQTT topic (smartstick/{deviceId}/sensors/gps)
+   * @param {string} message - Message payload
+   */
+  async handleGPSData(topic, message) {
+    try {
+      const deviceId = this.extractDeviceId(topic);
+      const gpsData = JSON.parse(message);
+
+      console.log(`📍 GPS data from device ${deviceId}:`, gpsData);
+
+      // Expected format: { latitude: 37.7749, longitude: -122.4194, altitude: 50, speed: 1.5, timestamp: "..." }
+      const telemetryData = {
+        gps: {
+          latitude: gpsData.latitude,
+          longitude: gpsData.longitude,
+          altitude: gpsData.altitude,
+          speed: gpsData.speed,
+          accuracy: gpsData.accuracy,
+          heading: gpsData.heading,
+        },
+      };
+
+      await this.saveTelemetryData(deviceId, telemetryData, gpsData.timestamp);
+
+      // Update user's device location
+      await User.findOneAndUpdate(
+        { "devices.deviceId": deviceId },
+        {
+          $set: {
+            "devices.$.lastSeen": new Date(),
+            "devices.$.lastLocation": {
+              latitude: gpsData.latitude,
+              longitude: gpsData.longitude,
+            },
+          },
+        }
+      );
+
+      console.log(`✅ GPS data processed for device: ${deviceId}`);
+    } catch (error) {
+      console.error("❌ Error handling GPS data:", error);
+    }
+  }
+
+  /**
+   * Handle IMU sensor data from Raspberry Pi
+   * @param {string} topic - MQTT topic (smartstick/{deviceId}/sensors/imu)
+   * @param {string} message - Message payload
+   */
+  async handleIMUData(topic, message) {
+    try {
+      const deviceId = this.extractDeviceId(topic);
+      const imuData = JSON.parse(message);
+
+      console.log(`📊 IMU data from device ${deviceId}:`, imuData);
+
+      // Expected format: { acceleration: {x, y, z}, gyroscope: {x, y, z}, magnetometer: {x, y, z}, temperature: 25, timestamp: "..." }
+      const telemetryData = {
+        sensors: {
+          IMU: {
+            accelerometer: imuData.acceleration || imuData.accelerometer,
+            gyroscope: imuData.gyroscope,
+            magnetometer: imuData.magnetometer,
+            temperature: imuData.temperature,
+          },
+        },
+      };
+
+      // Just save raw IMU data
+      await this.saveTelemetryData(deviceId, telemetryData, imuData.timestamp);
+
+      console.log(`✅ IMU data processed for device: ${deviceId}`);
+    } catch (error) {
+      console.error("❌ Error handling IMU data:", error);
+    }
+  }
+
+  /**
+   * Save telemetry data to database
+   * @param {string} deviceId - Device ID
+   * @param {Object} telemetryData - Partial telemetry data
+   * @param {string} timestamp - Timestamp from sensor
+   */
+  async saveTelemetryData(deviceId, telemetryData, timestamp) {
+    try {
+      // Create or update telemetry record
+      const telemetry = new Telemetry({
+        deviceId,
+        timestamp: timestamp || new Date(),
+        sensors: telemetryData.sensors || {},
+        gps: telemetryData.gps || {},
+        connectivity: telemetryData.connectivity || {},
+        deviceStatus: telemetryData.deviceStatus || {},
+        metadata: telemetryData.metadata || {},
+      });
+
+      await telemetry.save();
+
+      // Update user's device last seen
+      await User.findOneAndUpdate(
+        { "devices.deviceId": deviceId },
+        {
+          $set: { "devices.$.lastSeen": new Date() },
+          $setOnInsert: { "devices.$.isActive": true },
+        }
+      );
+    } catch (error) {
+      console.error("❌ Error saving telemetry data:", error);
+    }
+  }
+
+  /**
+   * Handle telemetry messages from devices (combined data)
    * @param {string} topic - MQTT topic
    * @param {string} message - Message payload
    */
@@ -219,6 +418,8 @@ class MQTTClient {
     try {
       const deviceId = this.extractDeviceId(topic);
       const telemetryData = JSON.parse(message);
+
+      console.log(`📦 Combined telemetry from device ${deviceId}`);
 
       // Create telemetry record
       const telemetry = new Telemetry({
@@ -269,20 +470,22 @@ class MQTTClient {
       const deviceId = this.extractDeviceId(topic);
       const sosData = JSON.parse(message);
 
-      console.log(`🚨 SOS ALERT from device: ${deviceId}`);
+      console.log(`🚨 SOS ALERT from device via MQTT: ${deviceId}`);
 
+      // SOS from RPi just indicates button press - no analysis needed
       // Create SOS event
       const sosEvent = await Event.createSOSEvent(deviceId, sosData.gps, {
-        emergencyType: sosData.type || "manual",
+        emergencyType: "button_press",
         sensorData: sosData.sensors || {},
         timestamp: sosData.timestamp || new Date(),
+        trigger: "manual",
       });
 
       // Find users associated with this device
       const users = await User.findUsersWithFCMByDevice(deviceId);
 
       if (users.length > 0) {
-        // Send FCM notifications to all associated users
+        // Send FCM notifications to all associated users (mobile app)
         const fcmTokens = users
           .map((user) => user.fcmToken)
           .filter((token) => token);
@@ -304,11 +507,67 @@ class MQTTClient {
           }
           await sosEvent.save();
         }
+
+        // Publish SOS alert to mobile app via MQTT
+        await this.publishSOSToMobileApp(deviceId, sosData, users);
       }
 
       console.log(`✅ SOS alert processed for device: ${deviceId}`);
     } catch (error) {
       console.error("❌ Error handling SOS message:", error);
+    }
+  }
+
+  /**
+   * Publish SOS alert to mobile app via MQTT
+   * @param {string} deviceId - Device ID
+   * @param {Object} sosData - SOS data from RPi (just button press notification)
+   * @param {Array} users - Associated users
+   */
+  async publishSOSToMobileApp(deviceId, sosData, users) {
+    try {
+      for (const user of users) {
+        // Publish to user-specific topic for mobile app
+        const topic = `smartstick/mobile/${user._id}/sos`;
+
+        const sosAlert = {
+          type: "SOS_ALERT",
+          deviceId,
+          userId: user._id,
+          timestamp: new Date().toISOString(),
+          emergencyType: "button_press",
+          trigger: "manual",
+          location: sosData.gps || {},
+          sensors: sosData.sensors || {},
+          userInfo: {
+            name: user.name,
+            email: user.email,
+          },
+          emergencyContacts: user.emergencyContacts || [],
+          message: `Emergency SOS button pressed on Smart Stick device ${deviceId}`,
+        };
+
+        await this.publish(topic, sosAlert, { qos: 2, retain: true });
+
+        console.log(
+          `📱 SOS alert published to mobile app for user: ${user._id}`
+        );
+      }
+
+      // Also publish to general broadcast channel
+      const broadcastTopic = `smartstick/mobile/broadcast/sos`;
+      await this.publish(
+        broadcastTopic,
+        {
+          type: "SOS_ALERT",
+          deviceId,
+          timestamp: new Date().toISOString(),
+          location: sosData.gps || {},
+        },
+        { qos: 1 }
+      );
+    } catch (error) {
+      console.error("❌ Error publishing SOS to mobile app:", error);
     }
   }
 
@@ -421,6 +680,125 @@ class MQTTClient {
     } catch (error) {
       console.error(`❌ Failed to send command to device ${deviceId}:`, error);
       return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Handle obstacle alert from sonar sensors
+   * @param {string} deviceId - Device ID
+   * @param {number} distance - Minimum distance detected
+   * @param {Object} sonarData - Full sonar data
+   */
+  async handleObstacleAlert(deviceId, distance, sonarData) {
+    try {
+      // Check if we already have a recent obstacle alert
+      const recentAlert = await Event.findOne({
+        type: "OBSTACLE_DETECTED",
+        deviceId,
+        timestamp: { $gte: new Date(Date.now() - 5 * 1000) }, // Last 5 seconds
+      });
+
+      if (recentAlert) {
+        return; // Don't spam alerts
+      }
+
+      // Create obstacle detection event
+      await Event.create({
+        type: "OBSTACLE_DETECTED",
+        deviceId,
+        severity: distance < 20 ? "high" : "medium",
+        title: "Obstacle Detected",
+        description: `Obstacle detected at ${distance}cm from device ${deviceId}`,
+        metadata: {
+          sensorData: {
+            minDistance: distance,
+            sonarLeft: sonarData.left,
+            sonarCenter: sonarData.center,
+            sonarRight: sonarData.right,
+          },
+          alertValue: distance,
+          alertThreshold: 30,
+        },
+      });
+
+      console.log(
+        `⚠️ Obstacle alert created for device ${deviceId}: ${distance}cm`
+      );
+    } catch (error) {
+      console.error("❌ Error handling obstacle alert:", error);
+    }
+  }
+
+  /**
+   * Handle fall detection from IMU
+   * @param {string} deviceId - Device ID
+   * @param {number} magnitude - Acceleration magnitude
+   * @param {Object} imuData - Full IMU data
+   */
+  async handleFallDetection(deviceId, magnitude, imuData) {
+    try {
+      console.log(
+        `🚨 Fall detected on device ${deviceId}: ${magnitude.toFixed(2)} m/s²`
+      );
+
+      // Create fall detection event
+      const fallEvent = await Event.create({
+        type: "FALL_DETECTED",
+        deviceId,
+        severity: "critical",
+        title: "Fall Detected",
+        description: `Sudden impact detected on device ${deviceId} (${magnitude.toFixed(
+          2
+        )} m/s²)`,
+        metadata: {
+          sensorData: imuData,
+          alertValue: magnitude,
+          alertThreshold: 20,
+        },
+      });
+
+      // Send notification to users
+      const users = await User.findUsersWithFCMByDevice(deviceId);
+      const fcmTokens = users
+        .map((user) => user.fcmToken)
+        .filter((token) => token);
+
+      if (fcmTokens.length > 0) {
+        await fcmService.sendMulticastNotification(
+          fcmTokens,
+          "⚠️ Fall Detected",
+          `A fall has been detected on your Smart Stick. Impact: ${magnitude.toFixed(
+            1
+          )} m/s²`,
+          {
+            type: "fall_detected",
+            deviceId,
+            magnitude: magnitude.toString(),
+            severity: "critical",
+          }
+        );
+      }
+
+      // Publish fall alert to mobile app
+      for (const user of users) {
+        const topic = `smartstick/mobile/${user._id}/alert`;
+        await this.publish(
+          topic,
+          {
+            type: "FALL_ALERT",
+            deviceId,
+            userId: user._id,
+            timestamp: new Date().toISOString(),
+            magnitude,
+            imuData,
+          },
+          { qos: 1 }
+        );
+      }
+
+      console.log(`✅ Fall detection processed for device: ${deviceId}`);
+    } catch (error) {
+      console.error("❌ Error handling fall detection:", error);
     }
   }
 

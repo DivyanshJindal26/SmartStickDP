@@ -2,6 +2,7 @@ const Event = require("../models/Event");
 const User = require("../models/User");
 const fcmService = require("../utils/fcm");
 const Validators = require("../utils/validators");
+const mqttClient = require("../mqtt/mqttClient");
 
 class SOSController {
   /**
@@ -12,17 +13,18 @@ class SOSController {
     try {
       const { deviceId, gps, metadata, timestamp } = req.body;
 
-      console.log(`🚨 SOS ALERT received from device: ${deviceId}`);
+      console.log(`🚨 SOS ALERT received via HTTP from device: ${deviceId}`);
 
+      // SOS from RPi just indicates button press - no analysis needed here
       // Create SOS event
       const sosEvent = await Event.createSOSEvent(
         Validators.sanitizeText(deviceId),
         gps,
         {
-          emergencyType: metadata?.emergencyType || "manual",
-          sensorData: metadata?.sensorData || {},
+          emergencyType: "button_press",
+          sensorData: metadata?.sensorData || metadata?.sensors || {},
           timestamp: timestamp || new Date(),
-          ...metadata,
+          trigger: "manual",
         }
       );
 
@@ -73,6 +75,54 @@ class SOSController {
         await sosEvent.save();
       }
 
+      // Publish SOS alert to mobile app via MQTT
+      if (mqttClient.isConnected()) {
+        try {
+          for (const user of users) {
+            // Publish to user-specific topic for mobile app
+            const topic = `smartstick/mobile/${user._id}/sos`;
+
+            const sosAlert = {
+              type: "SOS_ALERT",
+              deviceId,
+              userId: user._id,
+              timestamp: new Date().toISOString(),
+              emergencyType: "button_press",
+              trigger: "manual",
+              location: gps || {},
+              sensors: metadata?.sensorData || metadata?.sensors || {},
+              userInfo: {
+                name: user.name,
+                email: user.email,
+              },
+              emergencyContacts: user.emergencyContacts || [],
+              message: `Emergency SOS button pressed on Smart Stick device ${deviceId}`,
+            };
+
+            await mqttClient.publish(topic, sosAlert, { qos: 2, retain: true });
+
+            console.log(`📱 SOS alert published to MQTT for user: ${user._id}`);
+          }
+
+          // Also publish to general broadcast channel
+          const broadcastTopic = `smartstick/mobile/broadcast/sos`;
+          await mqttClient.publish(
+            broadcastTopic,
+            {
+              type: "SOS_ALERT",
+              deviceId,
+              timestamp: new Date().toISOString(),
+              location: gps || {},
+            },
+            { qos: 1 }
+          );
+        } catch (mqttError) {
+          console.error("❌ Error publishing SOS to MQTT:", mqttError);
+        }
+      } else {
+        console.warn("⚠️ MQTT client not connected, skipping MQTT publish");
+      }
+
       // Log emergency contacts for manual notification if needed
       const emergencyContacts = users.reduce((contacts, user) => {
         return contacts.concat(user.emergencyContacts || []);
@@ -97,6 +147,7 @@ class SOSController {
           timestamp: sosEvent.timestamp,
           notificationsSent: fcmTokens.length,
           emergencyContactsAvailable: emergencyContacts.length,
+          mqttPublished: mqttClient.isConnected(),
         },
       });
     } catch (error) {
