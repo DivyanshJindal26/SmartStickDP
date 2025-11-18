@@ -301,46 +301,76 @@ class MQTTClient {
    * @param {string} topic - MQTT topic (smartstick/{deviceId}/sensors/gps)
    * @param {string} message - Message payload
    */
-  async handleGPSData(topic, message) {
-    try {
-      const deviceId = this.extractDeviceId(topic);
-      const gpsData = JSON.parse(message);
+/**
+ * Handle GPS data from Raspberry Pi
+ * @param {string} topic - MQTT topic (smartstick/{deviceId}/sensors/gps)
+ * @param {string} message - Message payload
+ */
+async handleGPSData(topic, message) {
+  try {
+    const deviceId = this.extractDeviceId(topic);
+    const gpsData = JSON.parse(message);
 
-      console.log(`📍 GPS data from device ${deviceId}:`, gpsData);
+    console.log(`📍 GPS data from device ${deviceId}:`, gpsData);
 
-      // Expected format: { latitude: 37.7749, longitude: -122.4194, altitude: 50, speed: 1.5, timestamp: "..." }
-      const telemetryData = {
-        gps: {
-          latitude: gpsData.latitude,
-          longitude: gpsData.longitude,
-          altitude: gpsData.altitude,
-          speed: gpsData.speed,
-          accuracy: gpsData.accuracy,
-          heading: gpsData.heading,
-        },
-      };
+    // Expected format: { latitude, longitude, altitude, speed, accuracy, heading, timestamp }
+    const telemetryData = {
+      gps: {
+        latitude: gpsData.latitude,
+        longitude: gpsData.longitude,
+        altitude: gpsData.altitude,
+        speed: gpsData.speed,
+        accuracy: gpsData.accuracy,
+        heading: gpsData.heading,
+      },
+    };
 
-      await this.saveTelemetryData(deviceId, telemetryData, gpsData.timestamp);
+    // Save to database
+    await this.saveTelemetryData(deviceId, telemetryData, gpsData.timestamp);
 
-      // Update user's device location
-      await User.findOneAndUpdate(
-        { "devices.deviceId": deviceId },
-        {
-          $set: {
-            "devices.$.lastSeen": new Date(),
-            "devices.$.lastLocation": {
-              latitude: gpsData.latitude,
-              longitude: gpsData.longitude,
-            },
+    // Update user's device location
+    await User.findOneAndUpdate(
+      { "devices.deviceId": deviceId },
+      {
+        $set: {
+          "devices.$.lastSeen": new Date(),
+          "devices.$.lastLocation": {
+            latitude: gpsData.latitude,
+            longitude: gpsData.longitude,
           },
-        }
-      );
+        },
+      }
+    );
 
-      console.log(`✅ GPS data processed for device: ${deviceId}`);
-    } catch (error) {
-      console.error("❌ Error handling GPS data:", error);
-    }
+    console.log(`✅ GPS data processed for device: ${deviceId}`);
+
+    // ---------------------------------------------------------
+    // 🔥 NEW CODE — RE-PUBLISH GPS TO MOBILE APP
+    // ---------------------------------------------------------
+    const mobileTopic = `smartstick/mobile/${deviceId}/sensors/gps`;
+
+    const mobilePayload = {
+      type: "GPS_UPDATE",
+      deviceId,
+      timestamp: gpsData.timestamp || new Date().toISOString(),
+      latitude: gpsData.latitude,
+      longitude: gpsData.longitude,
+      altitude: gpsData.altitude || 0,
+      speed: gpsData.speed || 0,
+      accuracy: gpsData.accuracy || 0,
+      heading: gpsData.heading || 0,
+    };
+
+    await this.publish(mobileTopic, mobilePayload, { qos: 1 });
+
+    console.log(`📡 GPS forwarded to mobile topic: ${mobileTopic}`);
+    // ---------------------------------------------------------
+
+  } catch (error) {
+    console.error("❌ Error handling GPS data:", error);
   }
+}
+
 
   /**
    * Handle IMU sensor data from Raspberry Pi
